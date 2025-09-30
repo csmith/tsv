@@ -67,6 +67,9 @@ func (tn *TailscaleNode) setAdvertisedRoutes(ctx context.Context, routes []netip
 	_, err = lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 		Prefs: ipn.Prefs{
 			AdvertiseRoutes: routes,
+			AppConnector: ipn.AppConnectorPrefs{
+				Advertise: true,
+			},
 		},
 		AdvertiseRoutesSet: true,
 	})
