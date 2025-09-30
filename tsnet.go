@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -11,17 +12,15 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// TailscaleNode manages the tsnet server and subnet routes
-type TailscaleNode struct {
-	server *tsnet.Server
-	routes []netip.Prefix
-}
+var (
+	tsHostname  = flag.String("tailscale-hostname", "tsv", "Tailscale hostname")
+	tsConfigDir = flag.String("tailscale-config-dir", "", "Directory to store tsnet state")
+)
 
-// NewTailscaleNode creates a new Tailscale node with tsnet
-func NewTailscaleNode(hostname, stateDir string) (*TailscaleNode, error) {
+func ConnectToTailscale(ctx context.Context, connectionHandler func(net.Conn, netip.AddrPort, netip.AddrPort)) (*tsnet.Server, error) {
 	server := &tsnet.Server{
-		Hostname: hostname,
-		Dir:      stateDir,
+		Hostname: *tsHostname,
+		Dir:      *tsConfigDir,
 		UserLogf: func(format string, args ...any) {
 			slog.Info(fmt.Sprintf(format, args...))
 		},
@@ -30,94 +29,43 @@ func NewTailscaleNode(hostname, stateDir string) (*TailscaleNode, error) {
 		},
 	}
 
-	return &TailscaleNode{
-		server: server,
-	}, nil
-}
-
-// RegisterTCPHandler registers a TCP handler for fallback connections
-func (tn *TailscaleNode) RegisterTCPHandler(handler func(net.Conn, netip.AddrPort, netip.AddrPort)) {
-	tn.server.RegisterFallbackTCPHandler(func(src, dst netip.AddrPort) (func(net.Conn), bool) {
+	server.RegisterFallbackTCPHandler(func(src, dst netip.AddrPort) (func(net.Conn), bool) {
 		return func(conn net.Conn) {
-			handler(conn, src, dst)
+			connectionHandler(conn, src, dst)
 		}, true
 	})
-}
 
-// Start starts the Tailscale node
-func (tn *TailscaleNode) Start(ctx context.Context) error {
-	slog.Info("Starting Tailscale node", "hostname", tn.server.Hostname)
+	slog.Info("Starting Tailscale node", "hostname", *tsHostname)
 
-	_, err := tn.server.Up(ctx)
+	_, err := server.Up(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	slog.Info("Tailscale node is up")
-	return nil
-}
+	slog.Info("Tailscale node is up, advertising as AppConnector")
 
-// setAdvertisedRoutes updates the advertised routes via LocalClient
-func (tn *TailscaleNode) setAdvertisedRoutes(ctx context.Context, routes []netip.Prefix) error {
-	lc, err := tn.server.LocalClient()
+	lc, err := server.LocalClient()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to get LocalClient: %w", err)
 	}
 
 	_, err = lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 		Prefs: ipn.Prefs{
-			AdvertiseRoutes: routes,
 			AppConnector: ipn.AppConnectorPrefs{
 				Advertise: true,
 			},
+			AdvertiseRoutes: []netip.Prefix{
+				netip.MustParsePrefix("0.0.0.0/0"),
+				netip.MustParsePrefix("::/0"),
+			},
 		},
-		AdvertiseRoutesSet: true,
 		AppConnectorSet:    true,
+		AdvertiseRoutesSet: true,
 	})
-	return err
-}
-
-// UpdateRoutes updates the advertised subnet routes dynamically
-func (tn *TailscaleNode) UpdateRoutes(routes []netip.Prefix) {
-	if !tn.routesDifferent(routes) {
-		slog.Debug("Routes unchanged, skipping update")
-		return
+	if err != nil {
+		return nil, fmt.Errorf("failed to advertise as AppConnector: %w", err)
 	}
 
-	oldRoutes := tn.routes
-	tn.routes = routes
-	slog.Info("Updating routes", "count", len(routes))
-
-	if err := tn.setAdvertisedRoutes(context.Background(), routes); err != nil {
-		slog.Error("Failed to update routes", "error", err)
-		tn.routes = oldRoutes // Rollback
-		return
-	}
-
-	slog.Info("Successfully updated routes", "count", len(routes))
-}
-
-// routesDifferent returns true if newRoutes are different to the existing routes
-func (tn *TailscaleNode) routesDifferent(newRoutes []netip.Prefix) bool {
-	if len(tn.routes) != len(newRoutes) {
-		return true
-	}
-
-	oldMap := make(map[netip.Prefix]bool)
-	for _, r := range tn.routes {
-		oldMap[r] = true
-	}
-
-	for _, r := range newRoutes {
-		if !oldMap[r] {
-			return true
-		}
-	}
-
-	return false
-}
-
-// Close closes the Tailscale node
-func (tn *TailscaleNode) Close() error {
-	return tn.server.Close()
+	slog.Info("Successfully advertised as AppConnector")
+	return server, nil
 }

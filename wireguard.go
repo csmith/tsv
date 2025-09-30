@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,19 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
+)
+
+var (
+	wgPrivateKey        = flag.String("wg-private-key", "", "WireGuard private key (base64 encoded string)")
+	wgPublicKey         = flag.String("wg-public-key", "", "WireGuard peer public key (base64 encoded string)")
+	wgPresharedKey      = flag.String("wg-preshared-key", "", "WireGuard preshared key (optional; base64 encoded string)")
+	wgEndpoint          = flag.String("wg-endpoint", "", "WireGuard endpoint (host:port; dns names resolved at startup)")
+	wgAllowedIPs        = flag.String("wg-allowed-ips", "0.0.0.0/0,::/0", "WireGuard allowed IPs (comma-separated)")
+	wgAddress           = flag.String("wg-address", "", "WireGuard interface address (e.g., 10.0.0.2/32)")
+	wgDNS               = flag.String("wg-dns", "9.9.9.9", "DNS servers (comma-separated)")
+	wgMTU               = flag.Int("wg-mtu", 1420, "WireGuard MTU")
+	wgHealthCheckURL    = flag.String("wg-health-check-url", "https://www.gstatic.com/generate_204", "Health check URL")
+	wgHealthCheckPeriod = flag.Duration("wg-health-check-period", 30*time.Second, "Health check period")
 )
 
 // WireGuardClient manages a userland WireGuard connection
@@ -30,8 +44,21 @@ type WireGuardClient struct {
 }
 
 // NewWireGuardClient creates a new userland WireGuard client
-func NewWireGuardClient(cfg *WireGuardConfig) (*WireGuardClient, error) {
+func NewWireGuardClient() (*WireGuardClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	cfg := &WireGuardConfig{
+		PrivateKey:        *wgPrivateKey,
+		PeerPublicKey:     *wgPublicKey,
+		PresharedKey:      *wgPresharedKey,
+		Endpoint:          *wgEndpoint,
+		AllowedIPs:        *wgAllowedIPs,
+		Address:           *wgAddress,
+		DNSServers:        *wgDNS,
+		MTU:               *wgMTU,
+		HealthCheckURL:    *wgHealthCheckURL,
+		HealthCheckPeriod: *wgHealthCheckPeriod,
+	}
 
 	dev, tnet, err := cfg.createNetTUN()
 	if err != nil {

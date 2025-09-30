@@ -9,32 +9,21 @@ import (
 	"time"
 )
 
-// Proxy handles proxying connections from Tailscale to WireGuard
+// Proxy handles proxying connections to WireGuard
 type Proxy struct {
-	tsNode   *TailscaleNode
 	wgClient *WireGuardClient
 	ctx      context.Context
 }
 
 // NewProxy creates a new proxy
-func NewProxy(tsNode *TailscaleNode, wgClient *WireGuardClient, ctx context.Context) *Proxy {
+func NewProxy(wgClient *WireGuardClient, ctx context.Context) *Proxy {
 	return &Proxy{
-		tsNode:   tsNode,
 		wgClient: wgClient,
 		ctx:      ctx,
 	}
 }
 
-// Start starts listening for connections and proxying them
-func (p *Proxy) Start() {
-	p.tsNode.RegisterTCPHandler(func(conn net.Conn, src, dst netip.AddrPort) {
-		p.handleConnection(conn, src, dst)
-	})
-
-	slog.Info("Proxy started - TCP handler registered")
-}
-
-func (p *Proxy) handleConnection(clientConn net.Conn, src, dst netip.AddrPort) {
+func (p *Proxy) HandleConnection(clientConn net.Conn, src, dst netip.AddrPort) {
 	defer clientConn.Close()
 
 	destAddr := dst.String()
