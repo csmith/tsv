@@ -72,6 +72,7 @@ func (tn *TailscaleNode) setAdvertisedRoutes(ctx context.Context, routes []netip
 			},
 		},
 		AdvertiseRoutesSet: true,
+		AppConnectorSet:    true,
 	})
 	return err
 }
