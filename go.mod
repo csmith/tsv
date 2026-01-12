@@ -6,7 +6,7 @@ require (
 	github.com/csmith/envflag/v2 v2.0.0
 	github.com/csmith/slogflags v1.1.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
-	tailscale.com v1.92.1
+	tailscale.com v1.92.2
 )
 
 require (
