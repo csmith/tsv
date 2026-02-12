@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -272,29 +273,16 @@ func TestBuildWireGuardConfig(t *testing.T) {
 			}
 			if !tt.wantErr {
 				for _, want := range tt.wantContains {
-					if !contains(got, want) {
+					if !strings.Contains(got, want) {
 						t.Errorf("buildConfig() missing expected string %q in output:\n%s", want, got)
 					}
 				}
 				for _, notWant := range tt.wantNotContain {
-					if contains(got, notWant) {
+					if strings.Contains(got, notWant) {
 						t.Errorf("buildConfig() contains unexpected string %q in output:\n%s", notWant, got)
 					}
 				}
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOf(s, substr) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
