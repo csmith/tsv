@@ -30,10 +30,12 @@ services:
       WG_ENDPOINT:      # remote endpoint (can be ip:port or host:port)
       
       # Optional wireguard settings:
-      WG_PRESHARED_KEY: # pre-shared key
-      WG_DNS:           # DNS servers (comma-separated, defaults to 9.9.9.9)
-      WG_MTU:           # MTU (defaults to 1420)
-      WG_ALLOWED_IPS:   # Allowed IP ranges (comma-separated defaults to 0.0.0.0/0,::/0)
+      WG_PRESHARED_KEY:      # pre-shared key
+      WG_DNS:                # DNS servers (comma-separated, defaults to 9.9.9.9)
+      WG_MTU:                # MTU (defaults to 1420)
+      WG_ALLOWED_IPS:        # Allowed IP ranges (comma-separated defaults to 0.0.0.0/0,::/0)
+      WG_ENDPOINT_PROTOCOLS: # IP protocols to use for the endpoint, in preference
+                             # order (comma-separated, defaults to 4,6)
       
       # Optional healthcheck settings:
       WG_HEALTH_CHECK_URL:    # URL to request to check connectivity, should return a 204 (default https://www.gstatic.com/generate_204)

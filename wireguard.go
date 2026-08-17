@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,7 +23,8 @@ var (
 	wgPrivateKey        = flag.String("wg-private-key", "", "WireGuard private key (base64 encoded string)")
 	wgPublicKey         = flag.String("wg-public-key", "", "WireGuard peer public key (base64 encoded string)")
 	wgPresharedKey      = flag.String("wg-preshared-key", "", "WireGuard preshared key (optional; base64 encoded string)")
-	wgEndpoint          = flag.String("wg-endpoint", "", "WireGuard endpoint (host:port; dns names resolved at startup)")
+	wgEndpoint          = flag.String("wg-endpoint", "", "WireGuard endpoint (host:port; hostnames are re-resolved and round-robined on failure)")
+	wgEndpointProtocols = flag.String("wg-endpoint-protocols", "4,6", "IP protocols to use for the endpoint, in preference order (comma-separated: 4, 6)")
 	wgAllowedIPs        = flag.String("wg-allowed-ips", "0.0.0.0/0,::/0", "WireGuard allowed IPs (comma-separated)")
 	wgAddress           = flag.String("wg-address", "", "WireGuard interface address (e.g., 10.0.0.2/32)")
 	wgDNS               = flag.String("wg-dns", "9.9.9.9", "DNS servers (comma-separated)")
@@ -33,12 +35,18 @@ var (
 
 // WireGuardClient manages a userland WireGuard connection
 type WireGuardClient struct {
-	dev                 *device.Device
-	tun                 *netstack.Net
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	healthCheckURL      string
-	healthCheckPeriod   time.Duration
+	dev               *device.Device
+	tun               *netstack.Net
+	cfg               *WireGuardConfig
+	peerPublicKeyHex  string
+	ctx               context.Context
+	cancel            context.CancelFunc
+	healthCheckURL    string
+	healthCheckPeriod time.Duration
+
+	// currentEndpoint, failureCount and consecutiveFailures are only touched
+	// by the healthCheck goroutine, so they need no synchronisation.
+	currentEndpoint     string
 	failureCount        int
 	consecutiveFailures int
 }
@@ -52,6 +60,7 @@ func NewWireGuardClient() (*WireGuardClient, error) {
 		PeerPublicKey:     *wgPublicKey,
 		PresharedKey:      *wgPresharedKey,
 		Endpoint:          *wgEndpoint,
+		EndpointProtocols: *wgEndpointProtocols,
 		AllowedIPs:        *wgAllowedIPs,
 		Address:           *wgAddress,
 		DNSServers:        *wgDNS,
@@ -60,7 +69,13 @@ func NewWireGuardClient() (*WireGuardClient, error) {
 		HealthCheckPeriod: *wgHealthCheckPeriod,
 	}
 
-	dev, tnet, err := cfg.createNetTUN()
+	peerPublicKeyHex, err := decodeKey("public key", cfg.PeerPublicKey)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	dev, tnet, endpoint, err := cfg.createNetTUN()
 	if err != nil {
 		cancel()
 		return nil, err
@@ -78,10 +93,13 @@ func NewWireGuardClient() (*WireGuardClient, error) {
 	wgClient := &WireGuardClient{
 		dev:               dev,
 		tun:               tnet,
+		cfg:               cfg,
+		peerPublicKeyHex:  peerPublicKeyHex,
 		ctx:               ctx,
 		cancel:            cancel,
 		healthCheckURL:    healthCheckURL,
 		healthCheckPeriod: healthCheckPeriod,
+		currentEndpoint:   endpoint,
 	}
 
 	go wgClient.healthCheck()
@@ -133,9 +151,16 @@ func (wg *WireGuardClient) healthCheck() {
 	}
 }
 
-// restartDevice attempts to restart the WireGuard device
+// restartDevice attempts to restart the WireGuard device. If the endpoint is a
+// hostname it first re-resolves it and rotates to the next address in the pool,
+// so that a single dead pool member is routed around.
 func (wg *WireGuardClient) restartDevice() {
 	slog.Info("Restarting WireGuard device...")
+
+	if err := wg.rotateEndpoint(); err != nil {
+		slog.Error("Failed to rotate WireGuard endpoint, keeping current endpoint",
+			"endpoint", wg.currentEndpoint, "error", err)
+	}
 
 	wg.dev.Down()
 	time.Sleep(1 * time.Second)
@@ -143,7 +168,45 @@ func (wg *WireGuardClient) restartDevice() {
 
 	wg.consecutiveFailures = 0
 
-	slog.Info("WireGuard device restarted")
+	slog.Info("WireGuard device restarted", "endpoint", wg.currentEndpoint)
+}
+
+// rotateEndpoint re-resolves the endpoint hostname (a fresh DNS query every
+// time, so we never act on stale data) and points the peer at the next address
+// in the pool. For a literal IP or single-address hostname this is effectively
+// a no-op beyond picking up DNS changes.
+func (wg *WireGuardClient) rotateEndpoint() error {
+	endpoints, err := wg.cfg.resolveEndpoints()
+	if err != nil {
+		return err
+	}
+
+	next := nextEndpoint(endpoints, wg.currentEndpoint)
+	if next == wg.currentEndpoint {
+		slog.Debug("Endpoint unchanged after re-resolving", "endpoint", next, "candidates", len(endpoints))
+		return nil
+	}
+
+	if err := wg.dev.IpcSet(fmt.Sprintf("public_key=%s\nendpoint=%s\n", wg.peerPublicKeyHex, next)); err != nil {
+		return fmt.Errorf("failed to update peer endpoint: %w", err)
+	}
+
+	slog.Info("Rotated WireGuard endpoint", "from", wg.currentEndpoint, "to", next, "candidates", len(endpoints))
+	wg.currentEndpoint = next
+	return nil
+}
+
+// nextEndpoint returns the endpoint following current in the list, wrapping
+// around at the end. If current is not present (e.g. DNS returned an entirely
+// different set of addresses) the first endpoint is returned. endpoints must
+// not be empty.
+func nextEndpoint(endpoints []string, current string) string {
+	for i, ep := range endpoints {
+		if ep == current {
+			return endpoints[(i+1)%len(endpoints)]
+		}
+	}
+	return endpoints[0]
 }
 
 // checkConnectivity tests if we can reach the internet through WireGuard
@@ -196,6 +259,7 @@ type WireGuardConfig struct {
 	PeerPublicKey     string
 	PresharedKey      string
 	Endpoint          string
+	EndpointProtocols string
 	AllowedIPs        string
 	Address           string
 	DNSServers        string
@@ -209,8 +273,8 @@ func (cfg *WireGuardConfig) parseInterfaceAddresses() ([]netip.Addr, error) {
 	address := cfg.Address
 	var ifaceAddrs []netip.Addr
 	if address != "" {
-		addrStrings := strings.Split(address, ",")
-		for _, addrStr := range addrStrings {
+		addrStrings := strings.SplitSeq(address, ",")
+		for addrStr := range addrStrings {
 			addrStr = strings.TrimSpace(addrStr)
 			if addrStr == "" {
 				continue
@@ -241,8 +305,8 @@ func (cfg *WireGuardConfig) parseDNSServers() ([]netip.Addr, error) {
 	dnsServers := cfg.DNSServers
 	var dnsAddrs []netip.Addr
 	if dnsServers != "" {
-		dnsStrings := strings.Split(dnsServers, ",")
-		for _, dnsStr := range dnsStrings {
+		dnsStrings := strings.SplitSeq(dnsServers, ",")
+		for dnsStr := range dnsStrings {
 			dnsStr = strings.TrimSpace(dnsStr)
 			addr, err := netip.ParseAddr(dnsStr)
 			if err != nil {
@@ -260,113 +324,184 @@ func (cfg *WireGuardConfig) parseDNSServers() ([]netip.Addr, error) {
 	return dnsAddrs, nil
 }
 
-// resolveEndpoint resolves the endpoint hostname to IP:port
-func (cfg *WireGuardConfig) resolveEndpoint() (string, error) {
+// parseEndpointProtocols parses the comma-separated protocol preference list
+// (e.g. "4,6") into an ordered, de-duplicated list of IP versions. An empty
+// value defaults to IPv4 first, then IPv6.
+func (cfg *WireGuardConfig) parseEndpointProtocols() ([]int, error) {
+	if strings.TrimSpace(cfg.EndpointProtocols) == "" {
+		return []int{4, 6}, nil
+	}
+
+	var protocols []int
+	seen := make(map[int]bool)
+	for p := range strings.SplitSeq(cfg.EndpointProtocols, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		var version int
+		switch p {
+		case "4":
+			version = 4
+		case "6":
+			version = 6
+		default:
+			return nil, fmt.Errorf("invalid endpoint protocol %q (must be 4 or 6)", p)
+		}
+		if !seen[version] {
+			seen[version] = true
+			protocols = append(protocols, version)
+		}
+	}
+
+	if len(protocols) == 0 {
+		return nil, fmt.Errorf("no valid endpoint protocols specified")
+	}
+	return protocols, nil
+}
+
+// resolveEndpoints resolves the endpoint host to a list of ip:port endpoints,
+// ordered by the configured protocol preference. Hostnames are looked up fresh
+// on every call (no caching) so that round-robin pools and failover changes are
+// always reflected. A literal IP address is returned as-is, provided its
+// protocol is permitted.
+func (cfg *WireGuardConfig) resolveEndpoints() ([]string, error) {
 	host, port, err := net.SplitHostPort(cfg.Endpoint)
 	if err != nil {
-		return "", fmt.Errorf("invalid endpoint format: %w", err)
+		return nil, fmt.Errorf("invalid endpoint format: %w", err)
+	}
+
+	protocols, err := cfg.parseEndpointProtocols()
+	if err != nil {
+		return nil, err
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
-		return cfg.Endpoint, nil
+		if !protocolAllowed(protocols, ip) {
+			return nil, fmt.Errorf("endpoint %s is not permitted by the configured protocols %v", host, protocols)
+		}
+		return []string{cfg.Endpoint}, nil
 	}
 
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve hostname %s: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return "", fmt.Errorf("no IPs found for hostname %s", host)
+		return nil, fmt.Errorf("failed to resolve hostname %s: %w", host, err)
 	}
 
-	// Prefer IPv4 if available
-	var selectedIP net.IP
-	for _, ip := range ips {
-		if ip.To4() != nil {
-			selectedIP = ip
-			break
-		}
-	}
-	if selectedIP == nil {
-		selectedIP = ips[0]
+	endpoints := orderEndpoints(ips, port, protocols)
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("no usable IPs found for hostname %s with protocols %v", host, protocols)
 	}
 
-	resolvedEndpoint := net.JoinHostPort(selectedIP.String(), port)
-	slog.Info("Resolved WireGuard endpoint", "hostname", host, "ip", selectedIP.String(), "endpoint", resolvedEndpoint)
-	return resolvedEndpoint, nil
+	slog.Debug("Resolved WireGuard endpoint", "hostname", host, "endpoints", endpoints)
+	return endpoints, nil
 }
 
-// createNetTUN creates a netstack TUN device with parsed addresses
-func (cfg *WireGuardConfig) createNetTUN() (*device.Device, *netstack.Net, error) {
+// orderEndpoints groups the resolved IPs by protocol version and returns
+// ip:port endpoints ordered according to the protocol preference list. Within a
+// protocol the DNS ordering is preserved. IPs whose protocol is not in the
+// preference list are dropped.
+func orderEndpoints(ips []net.IP, port string, protocols []int) []string {
+	var endpoints []string
+	for _, version := range protocols {
+		for _, ip := range ips {
+			if ipVersion(ip) == version {
+				endpoints = append(endpoints, net.JoinHostPort(ip.String(), port))
+			}
+		}
+	}
+	return endpoints
+}
+
+// ipVersion returns 4 for an IPv4 address and 6 for an IPv6 address.
+func ipVersion(ip net.IP) int {
+	if ip.To4() != nil {
+		return 4
+	}
+	return 6
+}
+
+// protocolAllowed reports whether the given IP's protocol is in the list.
+func protocolAllowed(protocols []int, ip net.IP) bool {
+	target := ipVersion(ip)
+	return slices.Contains(protocols, target)
+}
+
+// createNetTUN creates a netstack TUN device with parsed addresses. It returns
+// the endpoint the peer was initially configured with, so the caller can track
+// it for later rotation.
+func (cfg *WireGuardConfig) createNetTUN() (*device.Device, *netstack.Net, string, error) {
 	ifaceAddrs, err := cfg.parseInterfaceAddresses()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	dnsAddrs, err := cfg.parseDNSServers()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
+
+	endpoints, err := cfg.resolveEndpoints()
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to resolve endpoint: %w", err)
+	}
+	endpoint := endpoints[0]
 
 	tun, tnet, err := netstack.CreateNetTUN(ifaceAddrs, dnsAddrs, cfg.MTU)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create TUN: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to create TUN: %w", err)
 	}
 
 	dev := device.NewDevice(tun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, ""))
 
-	config, err := cfg.buildConfig()
+	config, err := cfg.buildConfig(endpoint)
 	if err != nil {
 		dev.Close()
-		return nil, nil, fmt.Errorf("failed to build config: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to build config: %w", err)
 	}
 
 	if err := dev.IpcSet(config); err != nil {
 		dev.Close()
-		return nil, nil, fmt.Errorf("failed to configure device: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to configure device: %w", err)
 	}
 
 	dev.Up()
-	slog.Info("WireGuard device is up", "dns_servers", dnsAddrs)
+	slog.Info("WireGuard device is up", "dns_servers", dnsAddrs, "endpoint", endpoint)
 
-	return dev, tnet, nil
+	return dev, tnet, endpoint, nil
 }
 
-// buildConfig creates the WireGuard configuration string
-func (cfg *WireGuardConfig) buildConfig() (string, error) {
-	privKey, err := base64.StdEncoding.DecodeString(cfg.PrivateKey)
+// decodeKey decodes a base64-encoded WireGuard key and returns its hex
+// encoding, validating that it is exactly 32 bytes. name is used in errors.
+func decodeKey(name, key string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(key)
 	if err != nil {
-		return "", fmt.Errorf("invalid private key: %w", err)
+		return "", fmt.Errorf("invalid %s: %w", name, err)
 	}
-	if len(privKey) != 32 {
-		return "", fmt.Errorf("private key must be 32 bytes")
+	if len(raw) != 32 {
+		return "", fmt.Errorf("%s must be 32 bytes", name)
 	}
-	privKeyHex := hex.EncodeToString(privKey)
+	return hex.EncodeToString(raw), nil
+}
 
-	pubKey, err := base64.StdEncoding.DecodeString(cfg.PeerPublicKey)
+// buildConfig creates the WireGuard configuration string for the given endpoint.
+func (cfg *WireGuardConfig) buildConfig(endpoint string) (string, error) {
+	privKeyHex, err := decodeKey("private key", cfg.PrivateKey)
 	if err != nil {
-		return "", fmt.Errorf("invalid public key: %w", err)
+		return "", err
 	}
-	if len(pubKey) != 32 {
-		return "", fmt.Errorf("public key must be 32 bytes")
+
+	pubKeyHex, err := decodeKey("public key", cfg.PeerPublicKey)
+	if err != nil {
+		return "", err
 	}
-	pubKeyHex := hex.EncodeToString(pubKey)
 
 	var pskHex string
 	if cfg.PresharedKey != "" {
-		psk, err := base64.StdEncoding.DecodeString(cfg.PresharedKey)
+		pskHex, err = decodeKey("preshared key", cfg.PresharedKey)
 		if err != nil {
-			return "", fmt.Errorf("invalid preshared key: %w", err)
+			return "", err
 		}
-		if len(psk) != 32 {
-			return "", fmt.Errorf("preshared key must be 32 bytes")
-		}
-		pskHex = hex.EncodeToString(psk)
-	}
-
-	resolvedEndpoint, err := cfg.resolveEndpoint()
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve endpoint: %w", err)
 	}
 
 	allowedIPList := strings.Split(cfg.AllowedIPs, ",")
@@ -378,7 +513,7 @@ func (cfg *WireGuardConfig) buildConfig() (string, error) {
 		configBuilder.WriteString(fmt.Sprintf("preshared_key=%s\n", pskHex))
 	}
 
-	configBuilder.WriteString(fmt.Sprintf("endpoint=%s\n", resolvedEndpoint))
+	configBuilder.WriteString(fmt.Sprintf("endpoint=%s\n", endpoint))
 
 	for _, ip := range allowedIPList {
 		ip = strings.TrimSpace(ip)
