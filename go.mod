@@ -7,7 +7,7 @@ require (
 	github.com/csmith/slogflags v1.2.0
 	github.com/stretchr/testify v1.12.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
-	tailscale.com v1.102.1
+	tailscale.com v1.102.2
 )
 
 require (
