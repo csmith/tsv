@@ -51,7 +51,7 @@ func (p *Proxy) HandleConnection(clientConn net.Conn, src, dst netip.AddrPort) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 		_ = tcpConn.SetNoDelay(true)
 	}
-	if setter, ok := clientConn.(interface{ SetNoDelay(bool) error }); ok {
+	if setter, ok := clientConn.(interface{ SetNoDelay(noDelay bool) error }); ok {
 		_ = setter.SetNoDelay(true)
 	}
 

@@ -17,7 +17,10 @@ var (
 	tsConfigDir = flag.String("tailscale-config-dir", "", "Directory to store tsnet state")
 )
 
-func ConnectToTailscale(ctx context.Context, connectionHandler func(net.Conn, netip.AddrPort, netip.AddrPort)) (*tsnet.Server, error) {
+func ConnectToTailscale(
+	ctx context.Context,
+	connectionHandler func(net.Conn, netip.AddrPort, netip.AddrPort),
+) (*tsnet.Server, error) {
 	server := &tsnet.Server{
 		Hostname: *tsHostname,
 		Dir:      *tsConfigDir,
@@ -29,11 +32,13 @@ func ConnectToTailscale(ctx context.Context, connectionHandler func(net.Conn, ne
 		},
 	}
 
-	server.RegisterFallbackTCPHandler(func(src, dst netip.AddrPort) (func(net.Conn), bool) {
-		return func(conn net.Conn) {
-			connectionHandler(conn, src, dst)
-		}, true
-	})
+	server.RegisterFallbackTCPHandler(
+		func(src, dst netip.AddrPort) (func(net.Conn), bool) {
+			return func(conn net.Conn) {
+				connectionHandler(conn, src, dst)
+			}, true
+		},
+	)
 
 	slog.Info("Starting Tailscale node", "hostname", *tsHostname)
 
@@ -49,19 +54,22 @@ func ConnectToTailscale(ctx context.Context, connectionHandler func(net.Conn, ne
 		return nil, fmt.Errorf("failed to get LocalClient: %w", err)
 	}
 
-	_, err = lc.EditPrefs(ctx, &ipn.MaskedPrefs{
-		Prefs: ipn.Prefs{
-			AppConnector: ipn.AppConnectorPrefs{
-				Advertise: true,
+	_, err = lc.EditPrefs(
+		ctx,
+		&ipn.MaskedPrefs{
+			Prefs: ipn.Prefs{
+				AppConnector: ipn.AppConnectorPrefs{
+					Advertise: true,
+				},
+				AdvertiseRoutes: []netip.Prefix{
+					netip.MustParsePrefix("0.0.0.0/0"),
+					netip.MustParsePrefix("::/0"),
+				},
 			},
-			AdvertiseRoutes: []netip.Prefix{
-				netip.MustParsePrefix("0.0.0.0/0"),
-				netip.MustParsePrefix("::/0"),
-			},
+			AppConnectorSet:    true,
+			AdvertiseRoutesSet: true,
 		},
-		AppConnectorSet:    true,
-		AdvertiseRoutesSet: true,
-	})
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to advertise as AppConnector: %w", err)
 	}

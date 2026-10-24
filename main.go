@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -42,9 +42,7 @@ func main() {
 	}
 	defer wgClient.Close()
 
-	proxy := NewProxy(wgClient, ctx)
-
-	ts, err := ConnectToTailscale(ctx, proxy.HandleConnection)
+	ts, err := ConnectToTailscale(ctx, NewProxy(wgClient, ctx).HandleConnection)
 	if err != nil {
 		slog.Error("Failed to start Tailscale node", "error", err)
 		os.Exit(1)
@@ -59,13 +57,13 @@ func main() {
 
 func validateFlags() error {
 	if *wgPrivateKey == "" {
-		return fmt.Errorf("--wg-private-key is required")
+		return errors.New("--wg-private-key is required")
 	}
 	if *wgPublicKey == "" {
-		return fmt.Errorf("--wg-public-key is required")
+		return errors.New("--wg-public-key is required")
 	}
 	if *wgEndpoint == "" {
-		return fmt.Errorf("--wg-endpoint is required")
+		return errors.New("--wg-endpoint is required")
 	}
 	return nil
 }

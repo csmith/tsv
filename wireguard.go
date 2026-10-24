@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -20,11 +21,19 @@ import (
 )
 
 var (
-	wgPrivateKey        = flag.String("wg-private-key", "", "WireGuard private key (base64 encoded string)")
-	wgPublicKey         = flag.String("wg-public-key", "", "WireGuard peer public key (base64 encoded string)")
-	wgPresharedKey      = flag.String("wg-preshared-key", "", "WireGuard preshared key (optional; base64 encoded string)")
-	wgEndpoint          = flag.String("wg-endpoint", "", "WireGuard endpoint (host:port; hostnames are re-resolved and round-robined on failure)")
-	wgEndpointProtocols = flag.String("wg-endpoint-protocols", "4,6", "IP protocols to use for the endpoint, in preference order (comma-separated: 4, 6)")
+	wgPrivateKey   = flag.String("wg-private-key", "", "WireGuard private key (base64 encoded string)")
+	wgPublicKey    = flag.String("wg-public-key", "", "WireGuard peer public key (base64 encoded string)")
+	wgPresharedKey = flag.String("wg-preshared-key", "", "WireGuard preshared key (optional; base64 encoded string)")
+	wgEndpoint     = flag.String(
+		"wg-endpoint",
+		"",
+		"WireGuard endpoint (host:port; hostnames are re-resolved and round-robined on failure)",
+	)
+	wgEndpointProtocols = flag.String(
+		"wg-endpoint-protocols",
+		"4,6",
+		"IP protocols to use for the endpoint, in preference order (comma-separated: 4, 6)",
+	)
 	wgAllowedIPs        = flag.String("wg-allowed-ips", "0.0.0.0/0,::/0", "WireGuard allowed IPs (comma-separated)")
 	wgAddress           = flag.String("wg-address", "", "WireGuard interface address (e.g., 10.0.0.2/32)")
 	wgDNS               = flag.String("wg-dns", "9.9.9.9", "DNS servers (comma-separated)")
@@ -75,7 +84,7 @@ func NewWireGuardClient() (*WireGuardClient, error) {
 		return nil, err
 	}
 
-	dev, tnet, endpoint, err := cfg.createNetTUN()
+	dev, tnet, endpoint, err := cfg.createNetTUN(ctx)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -117,6 +126,12 @@ func (wg *WireGuardClient) DialContext(ctx context.Context, network, address str
 	return wg.tun.DialContext(ctx, network, address)
 }
 
+// Close closes the WireGuard client
+func (wg *WireGuardClient) Close() {
+	wg.cancel()
+	wg.dev.Close()
+}
+
 // healthCheck periodically checks WireGuard connectivity
 func (wg *WireGuardClient) healthCheck() {
 	ticker := time.NewTicker(wg.healthCheckPeriod)
@@ -139,9 +154,13 @@ func (wg *WireGuardClient) healthCheck() {
 				wg.failureCount++
 
 				if wg.consecutiveFailures >= 3 {
-					slog.Error("WireGuard health check failed 3 consecutive times, attempting to restart device",
-						"total_failures", wg.failureCount,
-						"consecutive_failures", wg.consecutiveFailures)
+					slog.Error(
+						"WireGuard health check failed 3 consecutive times, attempting to restart device",
+						"total_failures",
+						wg.failureCount,
+						"consecutive_failures",
+						wg.consecutiveFailures,
+					)
 					wg.restartDevice()
 				}
 			} else {
@@ -158,8 +177,13 @@ func (wg *WireGuardClient) restartDevice() {
 	slog.Info("Restarting WireGuard device...")
 
 	if err := wg.rotateEndpoint(); err != nil {
-		slog.Error("Failed to rotate WireGuard endpoint, keeping current endpoint",
-			"endpoint", wg.currentEndpoint, "error", err)
+		slog.Error(
+			"Failed to rotate WireGuard endpoint, keeping current endpoint",
+			"endpoint",
+			wg.currentEndpoint,
+			"error",
+			err,
+		)
 	}
 
 	wg.dev.Down()
@@ -176,7 +200,7 @@ func (wg *WireGuardClient) restartDevice() {
 // in the pool. For a literal IP or single-address hostname this is effectively
 // a no-op beyond picking up DNS changes.
 func (wg *WireGuardClient) rotateEndpoint() error {
-	endpoints, err := wg.cfg.resolveEndpoints()
+	endpoints, err := wg.cfg.resolveEndpoints(wg.ctx)
 	if err != nil {
 		return err
 	}
@@ -196,10 +220,7 @@ func (wg *WireGuardClient) rotateEndpoint() error {
 	return nil
 }
 
-// nextEndpoint returns the endpoint following current in the list, wrapping
-// around at the end. If current is not present (e.g. DNS returned an entirely
-// different set of addresses) the first endpoint is returned. endpoints must
-// not be empty.
+// nextEndpoint returns the endpoint after current, wrapping, or the first if current is absent.
 func nextEndpoint(endpoints []string, current string) string {
 	for i, ep := range endpoints {
 		if ep == current {
@@ -224,7 +245,7 @@ func (wg *WireGuardClient) checkConnectivity() bool {
 	ctx, cancel := context.WithTimeout(wg.ctx, 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", wg.healthCheckURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wg.healthCheckURL, nil)
 	if err != nil {
 		slog.Error("Failed to create health check request", "error", err)
 		return false
@@ -237,20 +258,13 @@ func (wg *WireGuardClient) checkConnectivity() bool {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 204 || resp.StatusCode == 200 {
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
 		slog.Debug("WireGuard health check passed", "url", wg.healthCheckURL, "status", resp.StatusCode)
 		return true
 	}
 
 	slog.Warn("WireGuard health check unexpected status", "url", wg.healthCheckURL, "status", resp.StatusCode)
 	return false
-}
-
-// Close closes the WireGuard client
-func (wg *WireGuardClient) Close() error {
-	wg.cancel()
-	wg.dev.Close()
-	return nil
 }
 
 // WireGuardConfig holds the configuration for a WireGuard connection
@@ -272,25 +286,22 @@ type WireGuardConfig struct {
 func (cfg *WireGuardConfig) parseInterfaceAddresses() ([]netip.Addr, error) {
 	address := cfg.Address
 	var ifaceAddrs []netip.Addr
-	if address != "" {
-		addrStrings := strings.SplitSeq(address, ",")
-		for addrStr := range addrStrings {
-			addrStr = strings.TrimSpace(addrStr)
-			if addrStr == "" {
-				continue
-			}
-
-			prefix, err := netip.ParsePrefix(addrStr)
-			if err != nil {
-				addr, err := netip.ParseAddr(addrStr)
-				if err != nil {
-					return nil, fmt.Errorf("invalid interface address %s: %w", addrStr, err)
-				}
-				ifaceAddrs = append(ifaceAddrs, addr)
-			} else {
-				ifaceAddrs = append(ifaceAddrs, prefix.Addr())
-			}
+	for addrStr := range strings.SplitSeq(address, ",") {
+		addrStr = strings.TrimSpace(addrStr)
+		if addrStr == "" {
+			continue
 		}
+
+		if prefix, err := netip.ParsePrefix(addrStr); err == nil {
+			ifaceAddrs = append(ifaceAddrs, prefix.Addr())
+			continue
+		}
+
+		addr, err := netip.ParseAddr(addrStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid interface address %s: %w", addrStr, err)
+		}
+		ifaceAddrs = append(ifaceAddrs, addr)
 	}
 
 	if len(ifaceAddrs) == 0 {
@@ -355,7 +366,7 @@ func (cfg *WireGuardConfig) parseEndpointProtocols() ([]int, error) {
 	}
 
 	if len(protocols) == 0 {
-		return nil, fmt.Errorf("no valid endpoint protocols specified")
+		return nil, errors.New("no valid endpoint protocols specified")
 	}
 	return protocols, nil
 }
@@ -365,7 +376,7 @@ func (cfg *WireGuardConfig) parseEndpointProtocols() ([]int, error) {
 // on every call (no caching) so that round-robin pools and failover changes are
 // always reflected. A literal IP address is returned as-is, provided its
 // protocol is permitted.
-func (cfg *WireGuardConfig) resolveEndpoints() ([]string, error) {
+func (cfg *WireGuardConfig) resolveEndpoints(ctx context.Context) ([]string, error) {
 	host, port, err := net.SplitHostPort(cfg.Endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("invalid endpoint format: %w", err)
@@ -383,7 +394,7 @@ func (cfg *WireGuardConfig) resolveEndpoints() ([]string, error) {
 		return []string{cfg.Endpoint}, nil
 	}
 
-	ips, err := net.LookupIP(host)
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve hostname %s: %w", host, err)
 	}
@@ -423,14 +434,13 @@ func ipVersion(ip net.IP) int {
 
 // protocolAllowed reports whether the given IP's protocol is in the list.
 func protocolAllowed(protocols []int, ip net.IP) bool {
-	target := ipVersion(ip)
-	return slices.Contains(protocols, target)
+	return slices.Contains(protocols, ipVersion(ip))
 }
 
 // createNetTUN creates a netstack TUN device with parsed addresses. It returns
 // the endpoint the peer was initially configured with, so the caller can track
 // it for later rotation.
-func (cfg *WireGuardConfig) createNetTUN() (*device.Device, *netstack.Net, string, error) {
+func (cfg *WireGuardConfig) createNetTUN(ctx context.Context) (*device.Device, *netstack.Net, string, error) {
 	ifaceAddrs, err := cfg.parseInterfaceAddresses()
 	if err != nil {
 		return nil, nil, "", err
@@ -441,7 +451,7 @@ func (cfg *WireGuardConfig) createNetTUN() (*device.Device, *netstack.Net, strin
 		return nil, nil, "", err
 	}
 
-	endpoints, err := cfg.resolveEndpoints()
+	endpoints, err := cfg.resolveEndpoints(ctx)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("failed to resolve endpoint: %w", err)
 	}

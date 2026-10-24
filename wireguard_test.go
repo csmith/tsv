@@ -64,16 +64,19 @@ func TestParseInterfaceAddresses(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &WireGuardConfig{Address: tt.input}
-			got, err := cfg.parseInterfaceAddresses()
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				cfg := &WireGuardConfig{Address: tt.input}
+				got, err := cfg.parseInterfaceAddresses()
+				if tt.wantErr {
+					assert.Error(t, err)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			},
+		)
 	}
 }
 
@@ -122,16 +125,19 @@ func TestParseDNSServers(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &WireGuardConfig{DNSServers: tt.input}
-			got, err := cfg.parseDNSServers()
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				cfg := &WireGuardConfig{DNSServers: tt.input}
+				got, err := cfg.parseDNSServers()
+				if tt.wantErr {
+					assert.Error(t, err)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			},
+		)
 	}
 }
 
@@ -139,7 +145,6 @@ func TestBuildWireGuardConfig(t *testing.T) {
 	// Valid test keys (base64-encoded 32-byte keys)
 	validPrivateKey := "YJlw8hY1KE3nQjVhLZVLnY1l3sV4fXTqQJZQJqVLmXo="
 	validPublicKey := "ZJlw8hY1KE3nQjVhLZVLnY1l3sV4fXTqQJZQJqVLmXo="
-	validPresharedKey := "aJlw8hY1KE3nQjVhLZVLnY1l3sV4fXTqQJZQJqVLmXo="
 
 	tests := []struct {
 		name           string
@@ -172,7 +177,7 @@ func TestBuildWireGuardConfig(t *testing.T) {
 			name:         "valid config with PSK",
 			privateKey:   validPrivateKey,
 			publicKey:    validPublicKey,
-			presharedKey: validPresharedKey,
+			presharedKey: "aJlw8hY1KE3nQjVhLZVLnY1l3sV4fXTqQJZQJqVLmXo=",
 			endpoint:     "192.168.1.1:51820",
 			allowedIPs:   "0.0.0.0/0",
 			wantContains: []string{
@@ -234,26 +239,29 @@ func TestBuildWireGuardConfig(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &WireGuardConfig{
-				PrivateKey:    tt.privateKey,
-				PeerPublicKey: tt.publicKey,
-				PresharedKey:  tt.presharedKey,
-				AllowedIPs:    tt.allowedIPs,
-			}
-			got, err := cfg.buildConfig(tt.endpoint)
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			for _, want := range tt.wantContains {
-				assert.Contains(t, got, want)
-			}
-			for _, notWant := range tt.wantNotContain {
-				assert.NotContains(t, got, notWant)
-			}
-		})
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				cfg := &WireGuardConfig{
+					PrivateKey:    tt.privateKey,
+					PeerPublicKey: tt.publicKey,
+					PresharedKey:  tt.presharedKey,
+					AllowedIPs:    tt.allowedIPs,
+				}
+				got, err := cfg.buildConfig(tt.endpoint)
+				if tt.wantErr {
+					assert.Error(t, err)
+					return
+				}
+				require.NoError(t, err)
+				for _, want := range tt.wantContains {
+					assert.Contains(t, got, want)
+				}
+				for _, notWant := range tt.wantNotContain {
+					assert.NotContains(t, got, notWant)
+				}
+			},
+		)
 	}
 }
 
@@ -277,16 +285,19 @@ func TestParseEndpointProtocols(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &WireGuardConfig{EndpointProtocols: tt.input}
-			got, err := cfg.parseEndpointProtocols()
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				cfg := &WireGuardConfig{EndpointProtocols: tt.input}
+				got, err := cfg.parseEndpointProtocols()
+				if tt.wantErr {
+					assert.Error(t, err)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			},
+		)
 	}
 }
 
@@ -308,16 +319,19 @@ func TestResolveEndpoints(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &WireGuardConfig{Endpoint: tt.endpoint, EndpointProtocols: tt.protocols}
-			got, err := cfg.resolveEndpoints()
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				cfg := &WireGuardConfig{Endpoint: tt.endpoint, EndpointProtocols: tt.protocols}
+				got, err := cfg.resolveEndpoints(t.Context())
+				if tt.wantErr {
+					assert.Error(t, err)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			},
+		)
 	}
 }
 
@@ -352,9 +366,12 @@ func TestOrderEndpoints(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, orderEndpoints(ips, "51820", tt.protocols))
-		})
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				assert.Equal(t, tt.want, orderEndpoints(ips, "51820", tt.protocols))
+			},
+		)
 	}
 }
 
@@ -375,8 +392,11 @@ func TestNextEndpoint(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, nextEndpoint(tt.endpoints, tt.current))
-		})
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				assert.Equal(t, tt.want, nextEndpoint(tt.endpoints, tt.current))
+			},
+		)
 	}
 }
