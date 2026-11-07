@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.2 - 2026-11-07
+
+- Dependency updates
+
 ## 1.2.1 - 2026-10-24
 
 - Built with Go 1.27.3, fixing vulnerabilities in the standard library including:
