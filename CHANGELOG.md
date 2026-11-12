@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.3 - 2026-11-12
+
+- Update to Go 1.27.4
+
 ## 1.2.2 - 2026-11-07
 
 - Dependency updates
