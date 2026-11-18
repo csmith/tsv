@@ -1,13 +1,13 @@
 module github.com/csmith/tsv
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/csmith/envflag/v2 v2.0.0
 	github.com/csmith/slogflags v1.2.0
 	github.com/stretchr/testify v1.12.1
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
-	tailscale.com v1.104.1
+	tailscale.com v1.104.2
 )
 
 require (
