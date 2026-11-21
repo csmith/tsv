@@ -49,14 +49,12 @@ func ConnectToTailscale(
 	_, err = lc.EditPrefs(
 		ctx,
 		&ipn.MaskedPrefs{
-			Prefs: ipn.Prefs{
-				AppConnector: ipn.AppConnectorPrefs{
-					Advertise: true,
-				},
-				AdvertiseRoutes: []netip.Prefix{
-					netip.MustParsePrefix("0.0.0.0/0"),
-					netip.MustParsePrefix("::/0"),
-				},
+			AppConnector: ipn.AppConnectorPrefs{
+				Advertise: true,
+			},
+			AdvertiseRoutes: []netip.Prefix{
+				netip.MustParsePrefix("0.0.0.0/0"),
+				netip.MustParsePrefix("::/0"),
 			},
 			AppConnectorSet:    true,
 			AdvertiseRoutesSet: true,
