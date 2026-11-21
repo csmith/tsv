@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 
+	"chameth.com/x/tailscale"
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
@@ -21,16 +22,7 @@ func ConnectToTailscale(
 	ctx context.Context,
 	connectionHandler func(net.Conn, netip.AddrPort, netip.AddrPort),
 ) (*tsnet.Server, error) {
-	server := &tsnet.Server{
-		Hostname: *tsHostname,
-		Dir:      *tsConfigDir,
-		UserLogf: func(format string, args ...any) {
-			slog.Info(fmt.Sprintf(format, args...))
-		},
-		Logf: func(format string, args ...any) {
-			slog.Debug(fmt.Sprintf(format, args...))
-		},
-	}
+	server := tailscale.NewServer(*tsHostname, *tsConfigDir, "")
 
 	server.RegisterFallbackTCPHandler(
 		func(src, dst netip.AddrPort) (func(net.Conn), bool) {
